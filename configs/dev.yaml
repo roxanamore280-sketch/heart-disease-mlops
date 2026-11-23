@@ -17,7 +17,18 @@ modelo:
     max_iter: 1000
   umbral: 0.5                      # se revisará con validación (falsos negativos vs falsos positivos)
 
-busqueda:
+# Parámetros de cada modelo. Se usan al entrenar con --tipo (ver train.py).
+parametros_por_modelo:
+  dummy:
+    strategy: most_frequent          # siempre predice la clase más frecuente (sano)
+  regresion_logistica:
+    C: 1.0 
+    max_iter: 1000
+random_forest: 
+  n_estimators: 200
+  random_state: 42 
+
+busqueda:  
   param_grid:
     clasificador__C: [0.01, 0.1, 1.0, 10.0]
     clasificador__class_weight: [null, balanced]

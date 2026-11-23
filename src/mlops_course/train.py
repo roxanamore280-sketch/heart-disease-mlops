@@ -181,12 +181,18 @@ def main() -> None:
   
     parser = argparse.ArgumentParser(description="Entrena el modelo de Heart Disease")
     parser.add_argument("--entorno", default=None, help="dev | preprod (o APP_ENV)")
+    parser.add_argument("--tipo", default=None, help="Modelo a entrenar")
     parser.add_argument("--busqueda", action="store_true", help="GridSearchCV acotado")
     args = parser.parse_args()
 
     # Cargar la configuración
     cfg = load_config(args.entorno)
 
+
+    # Si se indica --tipo, se usa ese modelo con su parámetros del YAML 
+    if args.tipo:
+        cfg["modelo"]["tipo"] = args.tipo
+        cfg["modelo"]["parametros"] = cfg["parametros_por_modelo"][args.tipo]
 
     # Cargar los datos y dividir en train, validación y test
     df = load_data(resolve_path(cfg["datos"]["ruta"]), es_entrenamiento=True)
