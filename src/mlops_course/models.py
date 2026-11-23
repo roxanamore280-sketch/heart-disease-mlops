@@ -8,7 +8,9 @@ no está soportado. No hace falta una jerarquía de clases para esto.
 from typing import Any
 
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.dummy import DummyClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -17,6 +19,7 @@ from sklearn.tree import DecisionTreeClassifier
 from mlops_course.data import CATEGORIAS, CATEGORICAS, NUMERICAS
 
 ESTIMADORES = {
+    "dummy": DummyClassifier,  # línea base: no aprende nada de los datos
     "regresion_logistica": LogisticRegression,
     "random_forest": RandomForestClassifier,
     "decision_tree": DecisionTreeClassifier,
@@ -35,25 +38,36 @@ def build_estimator(tipo: str, parametros: dict[str, Any] | None = None):
 def build_pipeline(tipo: str, parametros: dict[str, Any] | None = None) -> Pipeline:
     """Preprocesamiento + clasificador en un único objeto.
 
-    Al estar dentro del pipeline, escalado y one-hot se ajustan solo con los datos
-    de `fit` (train), lo que evita fuga de información hacia validación/test.
+    Al estar dentro del pipeline, la imputación, el escalado y el one-hot se
+    ajustan solo con los datos de `fit` (train), lo que evita fuga de
+    información hacia validación/test.
     """
-    #   - ColumnTransformer con StandardScaler para NUMERICAS y OneHotEncoder
-    #     (categories=[CATEGORIAS[c] for c in CATEGORICAS], handle_unknown="ignore")
-    #     para CATEGORICAS.
-    #   - Pipeline con los pasos "preprocesado" y "clasificador"
-    #     (usa build_estimator(tipo, parametros)).
-    preprocesamiento = ColumnTransformer(
+    # Numéricas: rellenar huecos con la mediana y después escalar
+    numericas = Pipeline(
         [
-            ("numericas", StandardScaler(), NUMERICAS),
+            ("imputar", SimpleImputer(strategy="median")),
+            ("escalar", StandardScaler()),
+        ]
+    )
+
+    # Categóricas: rellenar huecos con el valor más frecuente y pasar a 0/1
+    categoricas = Pipeline(
+        [
+            ("imputar", SimpleImputer(strategy="most_frequent")),
             (
-                "categoricas",
+                "codificar",
                 OneHotEncoder(
                     categories=[CATEGORIAS[c] for c in CATEGORICAS],
                     handle_unknown="ignore",
                 ),
-                CATEGORICAS,
             ),
+        ]
+    )
+
+    preprocesamiento = ColumnTransformer(
+        [
+            ("numericas", numericas, NUMERICAS),
+            ("categoricas", categoricas, CATEGORICAS),
         ]
     )
 
