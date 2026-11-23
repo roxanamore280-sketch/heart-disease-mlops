@@ -1,42 +1,46 @@
 # Configuración de desarrollo (sin secretos). Seleccionar con APP_ENV=dev (por defecto).
+# Caso: UCI Heart Disease (Cleveland), copia común cleveland-binary-v1.
 entorno: dev
-semilla: 42
+semilla: 42                 # semilla común indicada por el profesor
 
 datos:
-  ruta: data/churn.csv
-  target: abandona
-  test_size: 0.2      # fracción reservada para test final (no se usa para elegir hiperparámetros)
-  val_size: 0.2       # fracción de lo restante para validación
+  ruta: data/alt/heart_disease.csv
+  metadatos: data/alt/heart_disease.metadata.json   # contiene el hash SHA-256 para comprobar la copia
+  target: target
+  test_size: 0.2      # partición común 80/20 (242/61 filas); el test no se usa para decidir nada
+  val_size: 0.2       # fracción del entrenamiento reservada para validación
 
 modelo:
-  tipo: regresion_logistica        # regresion_logistica | random_forest (ver models.py)
+  tipo: regresion_logistica        # dummy | regresion_logistica | random_forest (ver models.py)
   parametros:
     C: 1.0
     max_iter: 1000
-  umbral: 0.5
+  umbral: 0.5                      # se revisará con validación (falsos negativos vs falsos positivos)
 
-busqueda:                           # sesión 2: espacio pequeño y acotado
+busqueda:
   param_grid:
     clasificador__C: [0.01, 0.1, 1.0, 10.0]
     clasificador__class_weight: [null, balanced]
   cv: 5
-  scoring: roc_auc
+  scoring: roc_auc                 # PENDIENTE: decidir la métrica al entrenar
 
 artefactos:
   dir: artifacts
   modelo: artifacts/model.joblib
   metadatos: artifacts/metadata.json
+  experimentos: reports/experimentos.csv     # registro estructurado: una fila por entrenamiento
 
 mlflow:
   tracking_uri: sqlite:///mlflow.db
-  experimento: churn-abandono
-  modelo_registrado: churn-abandono
+  experimento: heart-disease
+  modelo_registrado: heart-disease
 
 api:
   host: 127.0.0.1
   port: 8000
+  inferencias: logs/inferencias.csv          # fecha, versión, nº de registros y errores (sin datos clínicos)
 
 monitorizacion:
-  referencia: data/churn_referencia.csv
-  actual: data/churn_actual.csv
+  referencia: data/simulado/heart_referencia.csv
+  actual: data/simulado/heart_actual.csv
   informe: reports/drift_report.html

@@ -1,24 +1,60 @@
-"""Carga, validación y partición de datos del caso de abandono (churn)."""
+"""Carga, validación y partición de datos del caso Heart Disease (UCI Cleveland)."""
 
+import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-NUMERICAS = ["antiguedad_meses", "cuota_mensual"]
-CATEGORICAS = ["tipo_contrato", "tipo_internet", "metodo_pago"]
+# Variables según el diccionario de datos (data/alt/README.md)
+NUMERICAS = ["age", "trestbps", "chol", "thalach", "oldpeak"]
+CATEGORICAS = ["sex", "cp", "fbs", "restecg", "exang", "slope", "ca", "thal"]
 FEATURES = NUMERICAS + CATEGORICAS
-TARGET = "abandona"
+TARGET = "target"
 
+# Valores admitidos de cada variable categórica (códigos del dataset original).
+# `ca` es un recuento de vasos (0-3); se trata como categórica, igual que en el
+# notebook del profesor.
 CATEGORIAS = {
-    "tipo_contrato": ["mensual", "anual", "bianual"],
-    "tipo_internet": ["dsl", "fibra", "sin_internet"],
-    "metodo_pago": ["cheque_electronico", "cheque_postal", "transferencia", "tarjeta"],
+    "sex": [0, 1],
+    "cp": [1, 2, 3, 4],
+    "fbs": [0, 1],
+    "restecg": [0, 1, 2],
+    "exang": [0, 1],
+    "slope": [1, 2, 3],
+    "ca": [0, 1, 2, 3],
+    "thal": [3, 6, 7],
 }
+
+
+def calcular_hash(ruta: str | Path) -> str:
+    """Devuelve el hash SHA-256 de un archivo (su "huella")."""
+    contenido = Path(ruta).read_bytes()
+    return hashlib.sha256(contenido).hexdigest()
+
+
+def comprobar_hash(ruta_csv: str | Path, ruta_metadatos: str | Path) -> str:
+    """Comprueba que el CSV es la copia común facilitada por el profesor.
+
+    Compara el hash del CSV con el `csv_sha256` del archivo de metadatos.
+    Devuelve el hash si coincide; si no, lanza ValueError.
+    """
+    with Path(ruta_metadatos).open(encoding="utf-8") as f:
+        metadatos = json.load(f)
+
+    hash_csv = calcular_hash(ruta_csv)
+    if hash_csv != metadatos["csv_sha256"]:
+        raise ValueError(
+            f"El CSV {ruta_csv} no coincide con la copia común "
+            f"({metadatos['version']}). ¿Se ha modificado el archivo?"
+        )
+    return hash_csv
 
 
 def load_data(ruta: str | Path, es_entrenamiento: bool = True) -> pd.DataFrame:
     """Lee el CSV y comprueba que contiene las columnas esperadas.
+
     Args:
         ruta: Ruta al archivo CSV.
         es_entrenamiento: Indica si los datos son de entrenamiento
@@ -29,7 +65,7 @@ def load_data(ruta: str | Path, es_entrenamiento: bool = True) -> pd.DataFrame:
     """
     df = pd.read_csv(ruta)
 
-    # Comprobamos las columnas faltantes si es para entrenamiento o prediccion
+    # Comprobamos las columnas faltantes si es para entrenamiento o predicción
     if es_entrenamiento:
         lista_columnas = [*FEATURES, TARGET]
     else:
@@ -40,6 +76,12 @@ def load_data(ruta: str | Path, es_entrenamiento: bool = True) -> pd.DataFrame:
     if columnas_faltantes:
         raise ValueError(
             f"Faltan columnas en el CSV cuya ruta es {ruta}: {columnas_faltantes}"
+        )
+
+    # Para predecir, el target nunca debe venir en los datos de entrada
+    if not es_entrenamiento and TARGET in df.columns:
+        raise ValueError(
+            f"El CSV de inferencia {ruta} no debe incluir la columna '{TARGET}'."
         )
 
     return df
