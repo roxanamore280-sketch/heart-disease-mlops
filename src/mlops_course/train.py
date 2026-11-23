@@ -1,4 +1,4 @@
-"""Entrenamiento del modelo de abandono.
+"""Entrenamiento del modelo de enfermedad cardiaca (Heart Diusease)
 
 Uso (desde la raíz del proyecto):
 
@@ -137,7 +137,7 @@ def log_to_mlflow(
     with mlflow.start_run(run_name=run_name) as run:
         # Hiperparámetros y otros valores de configuración
         mlflow.log_params(params)
-        (mlflow.log_param("umbral", cfg["modelo"]["umbral"]),)
+        mlflow.log_param("umbral", cfg["modelo"]["umbral"])
 
         # Guardamos las métricas
         mlflow.log_metrics(metricas)
@@ -160,8 +160,8 @@ def log_to_mlflow(
 
         # Guardamos una foto de los datos tanto en Parquet como CSV
         # Se verán en "Artifacts"
-        mlflow.log_table(X_ejemplo, "datasets/muestra_churn.parquet")
-        mlflow.log_artifact("./data/churn.csv", "datasets/churn.csv")
+        mlflow.log_table(X_ejemplo, "datasets/muestra_heart.parquet")
+        mlflow.log_artifact(str(resolve_path(cfg["datos"]["ruta"])), "datasets")
 
         # Ver en formato CSV
         # mlflow.log_input()
@@ -178,15 +178,15 @@ def log_to_mlflow(
 def main() -> None:
 
     # Generamos los diferentes argumentos que recibirá nuestro script
-    print("hola clase!! :)")
-    parser = argparse.ArgumentParser(description="Entrena el modelo de abandono")
+  
+    parser = argparse.ArgumentParser(description="Entrena el modelo de Heart Disease")
     parser.add_argument("--entorno", default=None, help="dev | preprod (o APP_ENV)")
     parser.add_argument("--busqueda", action="store_true", help="GridSearchCV acotado")
     args = parser.parse_args()
 
     # Cargar la configuración
     cfg = load_config(args.entorno)
-    print(f"El parametro es: {args.busqueda}")
+
 
     # Cargar los datos y dividir en train, validación y test
     df = load_data(resolve_path(cfg["datos"]["ruta"]), es_entrenamiento=True)
@@ -207,7 +207,7 @@ def main() -> None:
         model = build_pipeline(cfg["modelo"]["tipo"], cfg["modelo"]["parametros"])
         model.fit(X_train, y_train)
         params = cfg["modelo"]["parametros"]
-        run_name = "prueba_3"
+        run_name = cfg["modelo"]["tipo"]
         cv_score = None
 
     metricas = {f"val_{k}": v for k, v in evaluate(model, *x_y(val), umbral).items()}
@@ -257,8 +257,6 @@ def main() -> None:
         modelo_recuperado.predict_proba(X_val), model.predict_proba(X_val)
     )
 
-    df_resultado_val = modelo_recuperado.predict(X_val)
-    print(df_resultado_val)
     print(f"Modelo del run {run_id} recuperado y verificado.")
 
 
