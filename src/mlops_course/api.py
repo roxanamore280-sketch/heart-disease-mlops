@@ -18,8 +18,8 @@ from fastapi.responses import JSONResponse
 
 from mlops_course.config import load_config
 from mlops_course.data import TARGET
-from mlops_course.predict import load_model, predict_df
-from mlops_course.schemas import Paciente, Prediccion
+from mlops_course.predict import load_model, predict_df, registrar_inferencia
+from mlops_course.schemas import Error, ErrorValidacion, Paciente, Prediccion, Salud
 
 estado: dict = {}
 
@@ -37,8 +37,10 @@ async def lifespan(app: FastAPI):
         estado["modelo"] = modelo
         estado["umbral"] = cfg["modelo"]["umbral"]
         estado["model_version"] = str(metadatos["model_version"])
+        estado["cfg"] = cfg
     except FileNotFoundError as e:
         estado["error_carga"] = str(e)
+        estado["cfg"] = cfg
     yield
     estado.clear()
 
@@ -80,6 +82,16 @@ def _traducir(error: dict) -> dict:
 async def errores_de_validacion(request: Request, exc: RequestValidationError):
     """422 con un formato legible: qué campo falla y por qué."""
     errores = [_traducir(e) for e in exc.errors()]
+    if "cfg" in estado:
+        registrar_inferencia(
+            estado["cfg"],
+            "api",
+            estado.get("model_version"),
+            1,
+            1,
+            "validacion",
+            [e["campo"] for e in errores],
+        )
     return JSONResponse(
         status_code=422,
         content={
@@ -89,7 +101,11 @@ async def errores_de_validacion(request: Request, exc: RequestValidationError):
     )
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    response_model=Salud,
+    responses={503: {"model": Salud, "description": "Modelo no cargado"}},
+)
 def health():
     """Comprobación de estado: si hay modelo cargado y qué versión."""
     if "modelo" not in estado:
@@ -97,16 +113,25 @@ def health():
             status_code=503,
             content={"status": "sin_modelo", "detail": estado.get("error_carga")},
         )
-    return {"status": "ok", "model_version": estado["model_version"]}
+    return Salud(status="ok", model_version=estado["model_version"])
 
 
-@app.post("/predict", response_model=Prediccion)
+@app.post(
+    "/predict",
+    response_model=Prediccion,
+    responses={
+        422: {"model": ErrorValidacion, "description": "Entrada no válida"},
+        503: {"model": Error, "description": "Modelo no disponible"},
+    },
+)
 def predict(paciente: Paciente) -> Prediccion:
     """Predice la probabilidad de enfermedad cardiaca (clase 1) de un paciente.
 
     Si la entrada no cumple el contrato, responde 422 indicando el campo y el motivo.
     """
     if "modelo" not in estado:
+        if "cfg" in estado:
+            registrar_inferencia(estado["cfg"], "api", None, 1, 1, "sin_modelo")
         raise HTTPException(
             status_code=503,
             detail=f"Modelo no disponible: {estado.get('error_carga')}",
@@ -114,6 +139,7 @@ def predict(paciente: Paciente) -> Prediccion:
     # ca/thal ausentes llegan como None -> NaN, y el pipeline los imputa
     df = pd.DataFrame([paciente.model_dump()])
     resultado = predict_df(estado["modelo"], df, estado["umbral"]).iloc[0]
+    registrar_inferencia(estado["cfg"], "api", estado["model_version"], 1, 0)
     return Prediccion(
         prediccion=int(resultado["prediccion"]),
         probabilidad=round(float(resultado["probabilidad"]), 4),

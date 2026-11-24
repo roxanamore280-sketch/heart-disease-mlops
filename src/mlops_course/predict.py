@@ -12,8 +12,11 @@ La salida conserva las filas de entrada en el mismo orden y añade:
 """
 
 import argparse
+import csv
 import json
 import sys
+import warnings
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,60 @@ from mlops_course.schemas import RANGOS_NUMERICOS  # mismos límites que la API
 
 # Variables que pueden venir vacías: el pipeline las imputa (como en entrenamiento).
 OPCIONALES = ["ca", "thal"]
+
+
+# Registro de inferencias: SOLO metadatos de cada ejecución, nunca valores clínicos.
+CAMPOS_REGISTRO = [
+    "fecha",
+    "origen",
+    "model_version",
+    "n_registros",
+    "n_predichos",
+    "n_errores",
+    "tipo_error",
+    "campos_con_error",
+]
+
+
+def registrar_inferencia(
+    cfg: dict,
+    origen: str,
+    model_version: str | None,
+    n_registros: int,
+    n_errores: int,
+    tipo_error: str = "",
+    campos_con_error: list[str] | None = None,
+) -> None:
+    """Añade una fila a `logs/inferencias.csv` (ruta en cfg["api"]["inferencias"]).
+
+    Guarda fecha, origen (batch/api), versión del modelo, nº de registros y de
+    errores, y el TIPO de error y los NOMBRES de los campos afectados. No guarda
+    ningún valor de entrada: la edad o el colesterol de un paciente no deben
+    quedar en un log. Si el registro falla, avisa pero no interrumpe la predicción.
+    """
+    ruta = resolve_path(cfg["api"]["inferencias"])
+    fila = {
+        "fecha": datetime.now(UTC).isoformat(timespec="seconds"),
+        "origen": origen,
+        "model_version": model_version or "",
+        "n_registros": n_registros,
+        "n_predichos": max(n_registros - n_errores, 0),
+        "n_errores": n_errores,
+        "tipo_error": tipo_error,
+        "campos_con_error": ";".join(sorted(set(campos_con_error or []))),
+    }
+    try:
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        nuevo = not ruta.exists()
+        with ruta.open("a", newline="", encoding="utf-8") as f:
+            escritor = csv.DictWriter(f, fieldnames=CAMPOS_REGISTRO)
+            if nuevo:
+                escritor.writeheader()
+            escritor.writerow(fila)
+    except OSError as e:
+        warnings.warn(
+            f"No se pudo escribir el registro de inferencias: {e}", stacklevel=2
+        )
 
 
 def load_model(cfg: dict) -> tuple[Any, dict]:
@@ -167,6 +224,21 @@ def batch_predict(cfg: dict, entrada: Path, salida: Path) -> pd.DataFrame:
     resultado.to_csv(salida, index=False)
 
     n_err = int((~validas).sum())
+    # Cada problema empieza por el nombre de su columna: "thal no admitido ..."
+    campos = [
+        parte.split(" ")[0]
+        for texto in errores[~validas]
+        for parte in texto.split("; ")
+    ]
+    registrar_inferencia(
+        cfg,
+        "batch",
+        str(metadatos["model_version"]),
+        len(df),
+        n_err,
+        "validacion_fila" if n_err else "",
+        campos,
+    )
     print(
         f"Modelo versión {metadatos['model_version']} | {len(df)} filas leídas, "
         f"{len(df) - n_err} predichas, {n_err} con error -> {salida}"
@@ -188,6 +260,12 @@ def main() -> None:
         )
     except (FileNotFoundError, ValueError) as e:
         # Mensaje comprensible en lugar de una traza de Python
+        tipo = (
+            "archivo_no_encontrado"
+            if isinstance(e, FileNotFoundError)
+            else "estructura"
+        )
+        registrar_inferencia(cfg, "batch", None, 0, 1, tipo)
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 

@@ -9,7 +9,7 @@ Los valores admitidos de las categóricas repiten los de `data.CATEGORIAS`
 ambas definiciones coinciden, para que no se desincronicen.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -85,3 +85,32 @@ class Prediccion(BaseModel):
     probabilidad: float = Field(ge=0, le=1, allow_inf_nan=False)
     umbral: float = Field(ge=0, le=1, allow_inf_nan=False)
     model_version: str = Field(min_length=1)
+
+
+class ErrorCampo(BaseModel):
+    """Un problema concreto de la entrada."""
+
+    campo: str
+    valor_recibido: Any = None
+    problema: str
+
+
+class ErrorValidacion(BaseModel):
+    """Respuesta 422 de la API: qué campos fallan y por qué."""
+
+    detail: str
+    errores: list[ErrorCampo]
+
+
+class Error(BaseModel):
+    """Respuesta de error genérica (p. ej. 503 si no hay modelo)."""
+
+    detail: str
+
+
+class Salud(BaseModel):
+    """Respuesta de GET /health."""
+
+    status: Literal["ok", "sin_modelo"]
+    model_version: str | None = None
+    detail: str | None = None
