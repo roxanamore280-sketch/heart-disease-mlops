@@ -23,18 +23,8 @@ import mlflow.sklearn
 import pandas as pd
 
 from mlops_course.config import load_config, resolve_path, tracking_uri
-from mlops_course.data import CATEGORIAS, CATEGORICAS, FEATURES, NUMERICAS, TARGET
-
-# Rangos admitidos para las numéricas. Son límites de plausibilidad (detectar
-# errores de captura o de unidades), no criterios clínicos. El dataset de
-# entrenamiento queda holgadamente dentro de ellos.
-RANGOS_NUMERICOS: dict[str, tuple[float, float]] = {
-    "age": (1, 120),  # años
-    "trestbps": (50, 250),  # presión arterial en reposo (mm Hg)
-    "chol": (50, 700),  # colesterol sérico (mg/dl)
-    "thalach": (50, 250),  # frecuencia cardiaca máxima
-    "oldpeak": (0, 10),  # depresión del ST
-}
+from mlops_course.data import CATEGORIAS, FEATURES, NUMERICAS, TARGET
+from mlops_course.schemas import RANGOS_NUMERICOS  # mismos límites que la API
 
 # Variables que pueden venir vacías: el pipeline las imputa (como en entrenamiento).
 OPCIONALES = ["ca", "thal"]
