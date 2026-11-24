@@ -1,13 +1,19 @@
 """Carga del modelo y predicción (en memoria y batch sobre CSV).
 
-Uso batch (se crea en la sesión 1 y se usa en la sesión 3), desde la raíz del proyecto:
+Uso batch, desde la raíz del proyecto:
 
-    uv run python -m mlops_course.predict --input data/churn_nuevos.csv \
-        --output reports/predicciones.csv
+    uv run python -m mlops_course.predict
+    uv run python -m mlops_course.predict --input data/ejemplos/pacientes_invalidos.csv
+
+El batch reutiliza el pipeline guardado en `artifacts/model.joblib` (no reentrena).
+La salida conserva las filas de entrada en el mismo orden y añade:
+`probabilidad` (de la clase 1), `prediccion` (0 sano / 1 enfermo), `error`,
+`umbral` y `model_version`.
 """
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +23,21 @@ import mlflow.sklearn
 import pandas as pd
 
 from mlops_course.config import load_config, resolve_path, tracking_uri
-from mlops_course.data import FEATURES, load_data
+from mlops_course.data import CATEGORIAS, CATEGORICAS, FEATURES, NUMERICAS, TARGET
+
+# Rangos admitidos para las numéricas. Son límites de plausibilidad (detectar
+# errores de captura o de unidades), no criterios clínicos. El dataset de
+# entrenamiento queda holgadamente dentro de ellos.
+RANGOS_NUMERICOS: dict[str, tuple[float, float]] = {
+    "age": (1, 120),  # años
+    "trestbps": (50, 250),  # presión arterial en reposo (mm Hg)
+    "chol": (50, 700),  # colesterol sérico (mg/dl)
+    "thalach": (50, 250),  # frecuencia cardiaca máxima
+    "oldpeak": (0, 10),  # depresión del ST
+}
+
+# Variables que pueden venir vacías: el pipeline las imputa (como en entrenamiento).
+OPCIONALES = ["ca", "thal"]
 
 
 def load_model(cfg: dict) -> tuple[Any, dict]:
@@ -26,29 +46,20 @@ def load_model(cfg: dict) -> tuple[Any, dict]:
     Solo cargar artefactos joblib generados por nosotros: deserializar un fichero
     no confiable puede ejecutar código.
     """
-    # Comprobar que existe cfg["artefactos"]["modelo"] (FileNotFoundError
-    # con un mensaje útil si no), cargarlo con joblib.load y leer el JSON de
-    # cfg["artefactos"]["metadatos"]. Devolver (modelo, metadatos).
-
-    # Cargamos la ruta del modelo y comprobamos si existe
     ruta_modelo = resolve_path(cfg["artefactos"]["modelo"])
     if not ruta_modelo.exists():
         raise FileNotFoundError(
-            f"No existe {ruta_modelo}. Para ello tienes que entrenar antes un modelo."
+            f"No existe {ruta_modelo}. Entrena antes un modelo con: "
+            "uv run python -m mlops_course.train"
         )
-
-    # Deserializamos nuestro modelo
     modelo = joblib.load(ruta_modelo)
 
-    # Leemos nuestros metadatos (JSON)
     ruta_metadatos = resolve_path(cfg["artefactos"]["metadatos"])
-
     if not ruta_metadatos.exists():
         raise FileNotFoundError(
-            f"No existe {ruta_metadatos}. Para ello tienes que entrenar antes "
-            "un modelo y generar sus metadatos."
+            f"No existe {ruta_metadatos}. Entrena antes un modelo con: "
+            "uv run python -m mlops_course.train"
         )
-
     with ruta_metadatos.open("r", encoding="utf-8") as f:
         metadatos = json.load(f)
 
@@ -57,67 +68,141 @@ def load_model(cfg: dict) -> tuple[Any, dict]:
 
 def load_registered_model(cfg: dict, version: str):
     """Carga una versión concreta del Model Registry de MLflow."""
-    # TODO S2: set_tracking_uri(tracking_uri(cfg)) y devolver
-    # mlflow.sklearn.load_model("models:/<modelo_registrado>/<version>").
-    raise NotImplementedError("TODO S2: load_registered_model")
+    mlflow.set_tracking_uri(tracking_uri(cfg))
+    nombre = cfg["mlflow"]["modelo_registrado"]
+    return mlflow.sklearn.load_model(f"models:/{nombre}/{version}")
+
+
+def validar_columnas(df: pd.DataFrame) -> None:
+    """Errores de estructura: impiden procesar el archivo entero."""
+    if df.empty:
+        raise ValueError("El CSV de entrada no tiene filas.")
+    if TARGET in df.columns:
+        raise ValueError(
+            f"El CSV de entrada no debe incluir la columna '{TARGET}': "
+            "es lo que el modelo predice."
+        )
+    faltan = [c for c in FEATURES if c not in df.columns]
+    sobran = [c for c in df.columns if c not in FEATURES]
+    if faltan or sobran:
+        partes = []
+        if faltan:
+            partes.append(f"faltan {faltan}")
+        if sobran:
+            partes.append(f"no se reconocen {sobran}")
+        raise ValueError(
+            f"Columnas incorrectas: {'; '.join(partes)}. "
+            f"Se esperan exactamente estas 13: {FEATURES}"
+        )
+
+
+def validar_filas(df: pd.DataFrame) -> pd.Series:
+    """Errores de valores, fila a fila.
+
+    Devuelve una Serie con el mismo índice que `df`: cadena vacía si la fila es
+    válida, o la lista de problemas encontrados en esa fila.
+    """
+    errores = pd.Series("", index=df.index, dtype="object")
+
+    def anotar(mascara: pd.Series, mensaje: str) -> None:
+        errores[mascara] = errores[mascara] + mensaje + "; "
+
+    for col in FEATURES:
+        texto = df[col]
+        valores = pd.to_numeric(texto, errors="coerce")  # texto no numérico -> NaN
+        vacio = texto.isna()
+        no_numerico = valores.isna() & ~vacio
+
+        anotar(no_numerico, f"{col} no es un número")
+        if col not in OPCIONALES:
+            anotar(vacio, f"{col} es obligatorio y está vacío")
+
+        presente = valores.notna()
+        if col in NUMERICAS:
+            minimo, maximo = RANGOS_NUMERICOS[col]
+            fuera = presente & ~valores.between(minimo, maximo)
+            anotar(fuera, f"{col} fuera de rango [{minimo}, {maximo}]")
+        else:  # categórica: solo códigos del diccionario de datos
+            admitidos = CATEGORIAS[col]
+            fuera = presente & ~valores.isin(admitidos)
+            anotar(fuera, f"{col} no admitido (valores válidos: {admitidos})")
+
+    return errores.str.rstrip("; ")
 
 
 def predict_df(model, df: pd.DataFrame, umbral: float) -> pd.DataFrame:
-    """Devuelve `probabilidad` de abandono y clase `abandona` para cada fila."""
-    # Usar model.predict_proba sobre df[FEATURES], quedarse con la
-    # columna de la clase 1 y aplicar el umbral. Devolver un DataFrame con las
-    # columnas "probabilidad" y "abandona" y el mismo índice que df.
+    """Devuelve `probabilidad` de la clase 1 y `prediccion` (0/1) para cada fila.
 
-    # Obtenemos la probabilidad y la clase predicha
-    y_proba = model.predict_proba(df[FEATURES])[:, 1]
+    Asume filas ya validadas. Mantiene el índice de `df` para poder unir el
+    resultado con la entrada sin perder la correspondencia.
+    """
+    X = df[FEATURES].apply(pd.to_numeric)
+    y_proba = model.predict_proba(X)[:, 1]
     y_pred = (y_proba >= umbral).astype(int)
-
-    # Construimos un dataframe con ambas variables
-    df_resultados = pd.DataFrame(
-        {"probabilidad": y_proba, "abandona": y_pred}, index=df.index
-    )
-
-    return df_resultados
+    return pd.DataFrame({"probabilidad": y_proba, "prediccion": y_pred}, index=df.index)
 
 
 def batch_predict(cfg: dict, entrada: Path, salida: Path) -> pd.DataFrame:
-    """Scoring batch: lee un CSV, predice y guarda el resultado con la versión."""
-    # TODO S1: cargar modelo y metadatos (load_model), leer el CSV de entrada,
-    # comprobar columnas, unir las predicciones (predict_df) al DataFrame original,
-    # añadir columnas "umbral" y "model_version", guardar en `salida` y devolverlo.
+    """Scoring batch: lee un CSV, valida, predice y guarda el resultado.
+
+    - Un error de estructura (archivo, columnas) detiene el proceso.
+    - Un error en una fila no detiene el resto: esa fila sale sin predicción y
+      con el motivo en la columna `error`.
+    """
     modelo, metadatos = load_model(cfg)
-    df = load_data(entrada, es_entrenamiento=False)
+    if not entrada.exists():
+        raise FileNotFoundError(f"No existe el archivo de entrada {entrada}")
 
-    # Hacemos la predicción con el modelo
+    df = pd.read_csv(entrada)
+    validar_columnas(df)
+    df = df[FEATURES]  # mismo orden de columnas que en entrenamiento
+
+    errores = validar_filas(df)
+    validas = errores == ""
+
     umbral = cfg["modelo"]["umbral"]
-    df_prediccion = predict_df(model=modelo, df=df, umbral=umbral)
+    resultado = df.copy()
+    resultado["probabilidad"] = float("nan")
+    resultado["prediccion"] = pd.NA
+    if validas.any():
+        pred = predict_df(modelo, df[validas], umbral)
+        resultado.loc[validas, "probabilidad"] = pred["probabilidad"].round(4)
+        resultado.loc[validas, "prediccion"] = pred["prediccion"]
+    resultado["prediccion"] = resultado["prediccion"].astype("Int64")
+    resultado["error"] = errores
+    resultado["umbral"] = umbral
+    resultado["model_version"] = str(metadatos["model_version"])
 
-    # Creamos el diccionario
-    df_resultado = df.join(df_prediccion)
-    df_resultado["umbral"] = umbral
-    df_resultado["model_version"] = metadatos["model_version"]
-
-    # Verificamos si salida existe
     salida.parent.mkdir(parents=True, exist_ok=True)
-    df_resultado.to_csv(salida, index=False)
+    resultado.to_csv(salida, index=False)
 
-    print(f"Predicciones generadas para {len(df_resultado)} filas (abandona o no)")
-
-    return df_resultado
+    n_err = int((~validas).sum())
+    print(
+        f"Modelo versión {metadatos['model_version']} | {len(df)} filas leídas, "
+        f"{len(df) - n_err} predichas, {n_err} con error -> {salida}"
+    )
+    return resultado
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Predicción batch sobre un CSV")
     parser.add_argument("--entorno", default=None)
-    parser.add_argument("--input", default="data/churn_nuevos.csv")
+    parser.add_argument("--input", default="data/ejemplos/pacientes_validos.csv")
     parser.add_argument("--output", default="reports/predicciones.csv")
     args = parser.parse_args()
     cfg = load_config(args.entorno)
-    df_resultado = batch_predict(
-        cfg, resolve_path(args.input), resolve_path(args.output)
-    )
 
-    print(df_resultado)
+    try:
+        resultado = batch_predict(
+            cfg, resolve_path(args.input), resolve_path(args.output)
+        )
+    except (FileNotFoundError, ValueError) as e:
+        # Mensaje comprensible en lugar de una traza de Python
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    columnas = ["probabilidad", "prediccion", "error", "model_version"]
+    print(resultado[columnas].to_string())
 
 
 if __name__ == "__main__":
